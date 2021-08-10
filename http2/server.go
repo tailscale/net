@@ -1390,7 +1390,7 @@ func (sc *serverConn) processFrame(f Frame) error {
 	// First frame received must be SETTINGS.
 	if !sc.sawFirstSettings {
 		if _, ok := f.(*SettingsFrame); !ok {
-			return ConnectionError(ErrCodeProtocol)
+			return countError("first_settings", ConnectionError(ErrCodeProtocol))
 		}
 		sc.sawFirstSettings = true
 	}
@@ -1415,7 +1415,7 @@ func (sc *serverConn) processFrame(f Frame) error {
 	case *PushPromiseFrame:
 		// A client cannot push. Thus, servers MUST treat the receipt of a PUSH_PROMISE
 		// frame as a connection error (Section 5.4.1) of type PROTOCOL_ERROR.
-		return ConnectionError(ErrCodeProtocol)
+		return countError("push_promise", ConnectionError(ErrCodeProtocol))
 	default:
 		sc.vlogf("http2: server ignoring frame: %v", f.Header())
 		return nil
@@ -1435,7 +1435,7 @@ func (sc *serverConn) processPing(f *PingFrame) error {
 		// identifier field value other than 0x0, the recipient MUST
 		// respond with a connection error (Section 5.4.1) of type
 		// PROTOCOL_ERROR."
-		return ConnectionError(ErrCodeProtocol)
+		return countError("ping_on_stream", ConnectionError(ErrCodeProtocol))
 	}
 	if sc.inGoAway && sc.goAwayCode != ErrCodeNo {
 		return nil
@@ -1454,7 +1454,7 @@ func (sc *serverConn) processWindowUpdate(f *WindowUpdateFrame) error {
 			// or PRIORITY on a stream in this state MUST be
 			// treated as a connection error (Section 5.4.1) of
 			// type PROTOCOL_ERROR."
-			return ConnectionError(ErrCodeProtocol)
+			return countError("stream_idle", ConnectionError(ErrCodeProtocol))
 		}
 		if st == nil {
 			// "WINDOW_UPDATE can be sent by a peer that has sent a
@@ -1465,7 +1465,7 @@ func (sc *serverConn) processWindowUpdate(f *WindowUpdateFrame) error {
 			return nil
 		}
 		if !st.flow.add(int32(f.Increment)) {
-			return streamError(f.StreamID, ErrCodeFlowControl)
+			return countError("bad_flow", streamError(f.StreamID, ErrCodeFlowControl))
 		}
 	default: // connection-level flow control
 		if !sc.flow.add(int32(f.Increment)) {
@@ -1486,7 +1486,7 @@ func (sc *serverConn) processResetStream(f *RSTStreamFrame) error {
 		// identifying an idle stream is received, the
 		// recipient MUST treat this as a connection error
 		// (Section 5.4.1) of type PROTOCOL_ERROR.
-		return ConnectionError(ErrCodeProtocol)
+		return countError("reset_idle_stream", ConnectionError(ErrCodeProtocol))
 	}
 	if st != nil {
 		st.cancelCtx()
@@ -1538,7 +1538,7 @@ func (sc *serverConn) processSettings(f *SettingsFrame) error {
 			// Why is the peer ACKing settings we never sent?
 			// The spec doesn't mention this case, but
 			// hang up on them anyway.
-			return ConnectionError(ErrCodeProtocol)
+			return countError("ack_mystery", ConnectionError(ErrCodeProtocol))
 		}
 		return nil
 	}
@@ -1546,7 +1546,7 @@ func (sc *serverConn) processSettings(f *SettingsFrame) error {
 		// This isn't actually in the spec, but hang up on
 		// suspiciously large settings frames or those with
 		// duplicate entries.
-		return ConnectionError(ErrCodeProtocol)
+		return countError("settings_big_or_dups", ConnectionError(ErrCodeProtocol))
 	}
 	if err := f.ForeachSetting(sc.processSetting); err != nil {
 		return err
@@ -1613,7 +1613,7 @@ func (sc *serverConn) processSettingInitialWindowSize(val uint32) error {
 			// control window to exceed the maximum size as a
 			// connection error (Section 5.4.1) of type
 			// FLOW_CONTROL_ERROR."
-			return ConnectionError(ErrCodeFlowControl)
+			return countError("setting_win_size", ConnectionError(ErrCodeFlowControl))
 		}
 	}
 	return nil
@@ -1646,7 +1646,7 @@ func (sc *serverConn) processData(f *DataFrame) error {
 		// or PRIORITY on a stream in this state MUST be
 		// treated as a connection error (Section 5.4.1) of
 		// type PROTOCOL_ERROR."
-		return ConnectionError(ErrCodeProtocol)
+		return countError("data_on_idle", ConnectionError(ErrCodeProtocol))
 	}
 
 	// "If a DATA frame is received whose stream is not in "open"
@@ -1663,7 +1663,7 @@ func (sc *serverConn) processData(f *DataFrame) error {
 		// and return any flow control bytes since we're not going
 		// to consume them.
 		if sc.inflow.available() < int32(f.Length) {
-			return streamError(id, ErrCodeFlowControl)
+			return countError("data_flow", streamError(id, ErrCodeFlowControl))
 		}
 		// Deduct the flow control from inflow, since we're
 		// going to immediately add it back in
@@ -1676,7 +1676,7 @@ func (sc *serverConn) processData(f *DataFrame) error {
 			// Already have a stream error in flight. Don't send another.
 			return nil
 		}
-		return streamError(id, ErrCodeStreamClosed)
+		return countError("closed", streamError(id, ErrCodeStreamClosed))
 	}
 	if st.body == nil {
 		panic("internal error: should have a body in this state")
@@ -1688,12 +1688,12 @@ func (sc *serverConn) processData(f *DataFrame) error {
 		// RFC 7540, sec 8.1.2.6: A request or response is also malformed if the
 		// value of a content-length header field does not equal the sum of the
 		// DATA frame payload lengths that form the body.
-		return streamError(id, ErrCodeProtocol)
+		return countError("send_too_much", streamError(id, ErrCodeProtocol))
 	}
 	if f.Length > 0 {
 		// Check whether the client has flow control quota.
 		if st.inflow.available() < int32(f.Length) {
-			return streamError(id, ErrCodeFlowControl)
+			return countError("flow_on_data_length", streamError(id, ErrCodeFlowControl))
 		}
 		st.inflow.take(int32(f.Length))
 
@@ -1701,7 +1701,7 @@ func (sc *serverConn) processData(f *DataFrame) error {
 			wrote, err := st.body.Write(data)
 			if err != nil {
 				sc.sendWindowUpdate(nil, int(f.Length)-wrote)
-				return streamError(id, ErrCodeStreamClosed)
+				return countError("body_write_err", streamError(id, ErrCodeStreamClosed))
 			}
 			if wrote != len(data) {
 				panic("internal error: bad Writer")
@@ -1787,7 +1787,7 @@ func (sc *serverConn) processHeaders(f *MetaHeadersFrame) error {
 	// stream identifier MUST respond with a connection error
 	// (Section 5.4.1) of type PROTOCOL_ERROR.
 	if id%2 != 1 {
-		return ConnectionError(ErrCodeProtocol)
+		return countError("headers_even", ConnectionError(ErrCodeProtocol))
 	}
 	// A HEADERS frame can be used to create a new stream or
 	// send a trailer for an open one. If we already have a stream
@@ -1804,7 +1804,7 @@ func (sc *serverConn) processHeaders(f *MetaHeadersFrame) error {
 		// this state, it MUST respond with a stream error (Section 5.4.2) of
 		// type STREAM_CLOSED.
 		if st.state == stateHalfClosedRemote {
-			return streamError(id, ErrCodeStreamClosed)
+			return countError("headers_half_closed", streamError(id, ErrCodeStreamClosed))
 		}
 		return st.processTrailerHeaders(f)
 	}
@@ -1815,7 +1815,7 @@ func (sc *serverConn) processHeaders(f *MetaHeadersFrame) error {
 	// receives an unexpected stream identifier MUST respond with
 	// a connection error (Section 5.4.1) of type PROTOCOL_ERROR.
 	if id <= sc.maxClientStreamID {
-		return ConnectionError(ErrCodeProtocol)
+		return countError("stream_went_down", ConnectionError(ErrCodeProtocol))
 	}
 	sc.maxClientStreamID = id
 
@@ -1832,14 +1832,14 @@ func (sc *serverConn) processHeaders(f *MetaHeadersFrame) error {
 	if sc.curClientStreams+1 > sc.advMaxStreams {
 		if sc.unackedSettings == 0 {
 			// They should know better.
-			return streamError(id, ErrCodeProtocol)
+			return countError("over_max_streams", streamError(id, ErrCodeProtocol))
 		}
 		// Assume it's a network race, where they just haven't
 		// received our last SETTINGS update. But actually
 		// this can't happen yet, because we don't yet provide
 		// a way for users to adjust server parameters at
 		// runtime.
-		return streamError(id, ErrCodeRefusedStream)
+		return countError("over_max_streams_race", streamError(id, ErrCodeRefusedStream))
 	}
 
 	initialState := stateOpen
@@ -1893,15 +1893,15 @@ func (st *stream) processTrailerHeaders(f *MetaHeadersFrame) error {
 	sc := st.sc
 	sc.serveG.check()
 	if st.gotTrailerHeader {
-		return ConnectionError(ErrCodeProtocol)
+		return countError("dup_trailers", ConnectionError(ErrCodeProtocol))
 	}
 	st.gotTrailerHeader = true
 	if !f.StreamEnded() {
-		return streamError(st.id, ErrCodeProtocol)
+		return countError("trailers_not_ended", streamError(st.id, ErrCodeProtocol))
 	}
 
 	if len(f.PseudoFields()) > 0 {
-		return streamError(st.id, ErrCodeProtocol)
+		return countError("trailers_pseudo", streamError(st.id, ErrCodeProtocol))
 	}
 	if st.trailer != nil {
 		for _, hf := range f.RegularFields() {
@@ -1910,7 +1910,7 @@ func (st *stream) processTrailerHeaders(f *MetaHeadersFrame) error {
 				// TODO: send more details to the peer somehow. But http2 has
 				// no way to send debug data at a stream level. Discuss with
 				// HTTP folk.
-				return streamError(st.id, ErrCodeProtocol)
+				return countError("trailers_bogus", streamError(st.id, ErrCodeProtocol))
 			}
 			st.trailer[key] = append(st.trailer[key], hf.Value)
 		}
@@ -1925,7 +1925,7 @@ func checkPriority(streamID uint32, p PriorityParam) error {
 		// this as a stream error (Section 5.4.2) of type PROTOCOL_ERROR."
 		// Section 5.3.3 says that a stream can depend on one of its dependencies,
 		// so it's only self-dependencies that are forbidden.
-		return streamError(streamID, ErrCodeProtocol)
+		return countError("priority", streamError(streamID, ErrCodeProtocol))
 	}
 	return nil
 }
@@ -2004,13 +2004,13 @@ func (sc *serverConn) newWriterAndRequest(st *stream, f *MetaHeadersFrame) (*res
 		// "All HTTP/2 requests MUST include exactly one valid
 		// value for the :method, :scheme, and :path
 		// pseudo-header fields"
-		return nil, nil, streamError(f.StreamID, ErrCodeProtocol)
+		return nil, nil, countError("bad_path_method", streamError(f.StreamID, ErrCodeProtocol))
 	}
 
 	bodyOpen := !f.StreamEnded()
 	if rp.method == "HEAD" && bodyOpen {
 		// HEAD requests can't have bodies
-		return nil, nil, streamError(f.StreamID, ErrCodeProtocol)
+		return nil, nil, countError("head_body", streamError(f.StreamID, ErrCodeProtocol))
 	}
 
 	rp.header = make(http.Header)
@@ -2093,7 +2093,7 @@ func (sc *serverConn) newWriterAndRequestNoBody(st *stream, rp requestParam) (*r
 		var err error
 		url_, err = url.ParseRequestURI(rp.path)
 		if err != nil {
-			return nil, nil, streamError(st.id, ErrCodeProtocol)
+			return nil, nil, countError("bad_path", streamError(st.id, ErrCodeProtocol))
 		}
 		requestURI = rp.path
 	}
