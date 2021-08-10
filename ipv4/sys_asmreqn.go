@@ -11,7 +11,7 @@ import (
 	"net"
 	"unsafe"
 
-	"golang.org/x/net/internal/socket"
+	"github.com/tailscale/net/internal/socket"
 
 	"golang.org/x/sys/unix"
 )

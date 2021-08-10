@@ -1,3 +1,8 @@
+# Temporary Fork
+
+This is Tailscale's temporary development fork of golang.org/x/net. It should
+not be used directly. It will be deleted.
+
 # Go Networking
 
 [![Go Reference](https://pkg.go.dev/badge/golang.org/x/net.svg)](https://pkg.go.dev/golang.org/x/net)

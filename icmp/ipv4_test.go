@@ -11,8 +11,8 @@ import (
 	"runtime"
 	"testing"
 
-	"golang.org/x/net/internal/socket"
-	"golang.org/x/net/ipv4"
+	"github.com/tailscale/net/internal/socket"
+	"github.com/tailscale/net/ipv4"
 )
 
 func TestParseIPv4Header(t *testing.T) {
